@@ -27,13 +27,27 @@
 .PARAMETER FirewallRuleName
     Custom name for the firewall rule. If not specified, generates a name automatically.
 
-.EXAMPLE
-    .\forward-wsl-port.ps1 -WindowsPort 8080 -WSLPort 3000
-    Forward Windows port 8080 to WSL port 3000 using TCP protocol.
+.PARAMETER BindAddress
+    Address to bind the Windows port to. Default is 127.0.0.1 (localhost only) for security.
+    Use 0.0.0.0 to bind to all interfaces (less secure).
+
+.PARAMETER FirewallProfile
+    Firewall profile to apply the rule to. Default is Private for security.
+
+.PARAMETER Force
+    Skip confirmation prompts for potentially unsafe operations.
 
 .EXAMPLE
-    .\forward-wsl-port.ps1 -WindowsPort 8080 -WSLPort 3000 -Protocol TCP -DistroName Ubuntu-22.04
-    Forward Windows port 8080 to WSL port 3000 using TCP protocol for specific distro.
+    .\forward-wsl-port.ps1 -WindowsPort 8080 -WSLPort 3000
+    Forward Windows port 8080 to WSL port 3000 using TCP protocol (localhost only).
+
+.EXAMPLE
+    .\forward-wsl-port.ps1 -WindowsPort 8080 -WSLPort 3000 -BindAddress 0.0.0.0 -FirewallProfile Any
+    Forward Windows port 8080 to WSL port 3000 and expose to all network interfaces.
+
+.EXAMPLE
+    .\forward-wsl-port.ps1 -WindowsPort 8080 -WSLPort 3000 -Protocol UDP -DistroName Ubuntu-22.04
+    Forward Windows port 8080 to WSL port 3000 using UDP protocol for specific distro.
 
 .EXAMPLE
     .\forward-wsl-port.ps1 -WindowsPort 8080 -WSLPort 3000 -Remove
@@ -66,8 +80,73 @@ param(
     [switch]$Remove,
     
     [Parameter(Mandatory = $false, HelpMessage = "Custom firewall rule name")]
-    [string]$FirewallRuleName = ""
+    [string]$FirewallRuleName = "",
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Address to bind the Windows port to")]
+    [ValidatePattern('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')]
+    [string]$BindAddress = "127.0.0.1",
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Firewall profile to apply rule to")]
+    [ValidateSet("Domain", "Private", "Public", "Any")]
+    [string]$FirewallProfile = "Private",
+    
+    [Parameter(Mandatory = $false, HelpMessage = "Skip confirmation prompts for unsafe operations")]
+    [switch]$Force
 )
+
+# Function to validate IP address
+function Test-IPAddress {
+    param([string]$IPAddress)
+    
+    try {
+        $ip = [System.Net.IPAddress]::Parse($IPAddress)
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+# Function to check if port is available
+function Test-PortAvailable {
+    param(
+        [int]$Port,
+        [string]$Protocol = "TCP"
+    )
+    
+    try {
+        if ($Protocol -eq "TCP") {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+            $listener.Start()
+            $listener.Stop()
+            return $true
+        }
+        else {
+            $udpClient = [System.Net.Sockets.UdpClient]::new($Port)
+            $udpClient.Close()
+            return $true
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
+# Function to prompt for confirmation
+function Confirm-UnsafeOperation {
+    param(
+        [string]$Message,
+        [bool]$Force
+    )
+    
+    if ($Force) {
+        return $true
+    }
+    
+    Write-ColorOutput $Message "Yellow"
+    $response = Read-Host "Continue? (y/N)"
+    return $response -match '^[Yy]$'
+}
 
 # Function to write colored output
 function Write-ColorOutput {
@@ -91,6 +170,11 @@ function Get-WSLIPAddress {
         
         if ([string]::IsNullOrWhiteSpace($wslIP)) {
             throw "Could not retrieve WSL IP address"
+        }
+        
+        # Validate the WSL IP address
+        if (-not (Test-IPAddress -IPAddress $wslIP.Trim())) {
+            throw "Invalid WSL IP address format: $wslIP"
         }
         
         return $wslIP.Trim()
@@ -124,7 +208,8 @@ function New-PortForwardFirewallRule {
     param(
         [int]$Port,
         [string]$Protocol,
-        [string]$RuleName
+        [string]$RuleName,
+        [string]$Profile = "Private"
     )
     
     try {
@@ -142,7 +227,7 @@ function New-PortForwardFirewallRule {
                            -Protocol $Protocol `
                            -LocalPort $Port `
                            -Action Allow `
-                           -Profile Any `
+                           -Profile $Profile `
                            -Description "WSL Port Forward - Allow inbound $Protocol traffic on port $Port" | Out-Null
         
         Write-ColorOutput "Created firewall rule: $RuleName" "Green"
@@ -182,25 +267,26 @@ function New-PortForwardRule {
         [int]$WindowsPort,
         [int]$WSLPort,
         [string]$WSLIPAddress,
-        [string]$Protocol
+        [string]$Protocol,
+        [string]$BindAddress = "127.0.0.1"
     )
     
     try {
         # Remove existing rule if it exists
-        $existingRule = netsh interface portproxy show v4tov4 | Select-String "0.0.0.0\s+$WindowsPort"
+        $existingRule = netsh interface portproxy show v4tov4 | Select-String "$BindAddress\s+$WindowsPort"
         if ($existingRule) {
             Write-ColorOutput "Removing existing port forward rule for port $WindowsPort..." "Yellow"
-            netsh interface portproxy delete v4tov4 listenport=$WindowsPort listenaddress=0.0.0.0 | Out-Null
+            netsh interface portproxy delete v4tov4 listenport=$WindowsPort listenaddress=$BindAddress | Out-Null
         }
         
         # Create new port forwarding rule
-        $netshCommand = "netsh interface portproxy add v4tov4 listenport=$WindowsPort listenaddress=0.0.0.0 connectport=$WSLPort connectaddress=$WSLIPAddress"
+        $netshCommand = "netsh interface portproxy add v4tov4 listenport=$WindowsPort listenaddress=$BindAddress connectport=$WSLPort connectaddress=$WSLIPAddress"
         Invoke-Expression $netshCommand | Out-Null
         
         # Verify the rule was created
-        $verifyRule = netsh interface portproxy show v4tov4 | Select-String "0.0.0.0\s+$WindowsPort"
+        $verifyRule = netsh interface portproxy show v4tov4 | Select-String "$BindAddress\s+$WindowsPort"
         if ($verifyRule) {
-            Write-ColorOutput "Created port forwarding rule: Windows:$WindowsPort -> WSL($WSLIPAddress):$WSLPort" "Green"
+            Write-ColorOutput "Created port forwarding rule: Windows($BindAddress):$WindowsPort -> WSL($WSLIPAddress):$WSLPort" "Green"
             return $true
         } else {
             throw "Failed to verify port forwarding rule creation"
@@ -214,14 +300,17 @@ function New-PortForwardRule {
 
 # Function to remove port forwarding rule
 function Remove-PortForwardRule {
-    param([int]$WindowsPort)
+    param(
+        [int]$WindowsPort,
+        [string]$BindAddress = "127.0.0.1"
+    )
     
     try {
         # Check if rule exists
-        $existingRule = netsh interface portproxy show v4tov4 | Select-String "0.0.0.0\s+$WindowsPort"
+        $existingRule = netsh interface portproxy show v4tov4 | Select-String "$BindAddress\s+$WindowsPort"
         
         if ($existingRule) {
-            netsh interface portproxy delete v4tov4 listenport=$WindowsPort listenaddress=0.0.0.0 | Out-Null
+            netsh interface portproxy delete v4tov4 listenport=$WindowsPort listenaddress=$BindAddress | Out-Null
             Write-ColorOutput "Removed port forwarding rule for port $WindowsPort" "Green"
             return $true
         } else {
@@ -255,7 +344,7 @@ try {
         Write-ColorOutput "`nRemoving port forwarding configuration..." "Yellow"
         
         # Remove port forwarding rule
-        Remove-PortForwardRule -WindowsPort $WindowsPort
+        Remove-PortForwardRule -WindowsPort $WindowsPort -BindAddress $BindAddress
         
         # Remove firewall rule
         Remove-PortForwardFirewallRule -RuleName $FirewallRuleName
@@ -263,11 +352,33 @@ try {
         Write-ColorOutput "`nPort forwarding removal completed!" "Green"
     }
     else {
+        # Security warnings for unsafe configurations
+        if ($BindAddress -eq "0.0.0.0" -and -not (Confirm-UnsafeOperation -Message "WARNING: Binding to 0.0.0.0 exposes the port to all network interfaces. This may be a security risk." -Force $Force)) {
+            Write-ColorOutput "Operation cancelled by user." "Yellow"
+            exit 0
+        }
+        
+        if ($FirewallProfile -eq "Any" -and -not (Confirm-UnsafeOperation -Message "WARNING: Using 'Any' firewall profile applies the rule to all network types including public networks." -Force $Force)) {
+            Write-ColorOutput "Operation cancelled by user." "Yellow"
+            exit 0
+        }
+        
         Write-ColorOutput "`nSetting up port forwarding..." "Yellow"
         Write-ColorOutput "Windows Port: $WindowsPort" "White"
         Write-ColorOutput "WSL Port: $WSLPort" "White"
         Write-ColorOutput "Protocol: $Protocol" "White"
+        Write-ColorOutput "Bind Address: $BindAddress" "White"
+        Write-ColorOutput "Firewall Profile: $FirewallProfile" "White"
         Write-ColorOutput "Distro: $(if($DistroName) { $DistroName } else { 'Default' })" "White"
+        
+        # Check if Windows port is available
+        if (-not (Test-PortAvailable -Port $WindowsPort -Protocol $Protocol)) {
+            Write-ColorOutput "WARNING: Port $WindowsPort appears to be in use. The port forwarding rule may not work correctly." "Yellow"
+            if (-not (Confirm-UnsafeOperation -Message "Continue anyway?" -Force $Force)) {
+                Write-ColorOutput "Operation cancelled by user." "Yellow"
+                exit 0
+            }
+        }
         
         # Check if WSL is running
         if (-not (Test-WSLRunning -DistroName $DistroName)) {
@@ -287,15 +398,19 @@ try {
         
         # Create firewall rule
         Write-ColorOutput "`nConfiguring Windows Firewall..." "Yellow"
-        $firewallSuccess = New-PortForwardFirewallRule -Port $WindowsPort -Protocol $Protocol -RuleName $FirewallRuleName
+        $firewallSuccess = New-PortForwardFirewallRule -Port $WindowsPort -Protocol $Protocol -RuleName $FirewallRuleName -Profile $FirewallProfile
         
         # Create port forwarding rule
         Write-ColorOutput "`nCreating port forwarding rule..." "Yellow"
-        $forwardSuccess = New-PortForwardRule -WindowsPort $WindowsPort -WSLPort $WSLPort -WSLIPAddress $wslIP -Protocol $Protocol
+        $forwardSuccess = New-PortForwardRule -WindowsPort $WindowsPort -WSLPort $WSLPort -WSLIPAddress $wslIP -Protocol $Protocol -BindAddress $BindAddress
         
         if ($firewallSuccess -and $forwardSuccess) {
             Write-ColorOutput "`nPort forwarding setup completed successfully!" "Green"
-            Write-ColorOutput "You can now access your WSL service at: http://localhost:$WindowsPort" "Green"
+            if ($BindAddress -eq "127.0.0.1") {
+                Write-ColorOutput "You can now access your WSL service at: http://localhost:$WindowsPort" "Green"
+            } else {
+                Write-ColorOutput "You can now access your WSL service at: http://${BindAddress}:$WindowsPort" "Green"
+            }
             
             # Show current rules
             Show-PortForwardRules
@@ -310,6 +425,7 @@ try {
     Write-ColorOutput "- Port forwarding rules persist until manually removed or system restart" "Gray"
     Write-ColorOutput "- Use -Remove parameter to clean up the configuration" "Gray"
     Write-ColorOutput "- Use 'netsh interface portproxy show v4tov4' to view all port forwarding rules" "Gray"
+    Write-ColorOutput "- For security, use 127.0.0.1 (localhost) binding unless external access is needed" "Gray"
 }
 catch {
     Write-ColorOutput "Script execution failed: $($_.Exception.Message)" "Red"
