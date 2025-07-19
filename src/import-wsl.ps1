@@ -24,17 +24,17 @@
     Skip the automatic update of the distribution after installation.
 
 .EXAMPLE
-    .\Install-WSLDistro-FromTar.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL" -TarFilePath "C:\Downloads\ubuntu.tar" -Username "john"
+    .\import-wsl.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL" -TarFilePath "C:\Downloads\ubuntu.tar" -Username "john"
 
 .EXAMPLE
-    .\Install-WSLDistro-FromTar.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL\MyUbuntu" -DownloadUrl "https://example.com/ubuntu.tar.gz" -Username "john"
+    .\import-wsl.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL\MyUbuntu" -DownloadUrl "https://example.com/ubuntu.tar.gz" -Username "john"
 
 .EXAMPLE
-    .\Install-WSLDistro-FromTar.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL" -TarFilePath "C:\Downloads\ubuntu.tar"
+    .\import-wsl.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL" -TarFilePath "C:\Downloads\ubuntu.tar"
 
 .EXAMPLE
     $securePassword = ConvertTo-SecureString "MyPassword123" -AsPlainText -Force
-    .\Install-WSLDistro-FromTar.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL" -TarFilePath "C:\Downloads\ubuntu.tar" -Username "john" -Password $securePassword
+    .\import-wsl.ps1 -DistroName "MyUbuntu" -WSLRootPath "C:\WSL" -TarFilePath "C:\Downloads\ubuntu.tar" -Username "john" -Password $securePassword
 
 .NOTES
     - Requires Administrator privileges
